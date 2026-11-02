@@ -1,0 +1,28 @@
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Credentials
+*.pfx
+*.pem
+*.key
+
+# Local deployment parameters
+*.local.bicepparam
+*.secret.bicepparam
+
+# Azure CLI
+.azure/
+
+# VS Code local settings
+.vscode/settings.json
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+
+# Generated ARM template
+main.json
