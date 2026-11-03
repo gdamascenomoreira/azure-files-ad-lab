@@ -29,10 +29,17 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName
   location: location
+
   properties: {
     addressSpace: {
       addressPrefixes: [
         vnetAddressPrefix
+      ]
+    }
+
+    dhcpOptions: {
+      dnsServers: [
+        '10.10.1.10'
       ]
     }
   }
@@ -44,6 +51,7 @@ resource dcSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   name: 'snet-dc'
   properties: {
     addressPrefix: dcSubnetPrefix
+    privateEndpointNetworkPolicies: 'Disabled'
     networkSecurityGroup: {
       id: nsg.id
     }
@@ -56,6 +64,7 @@ resource clientSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   name: 'snet-client'
   properties: {
     addressPrefix: clientSubnetPrefix
+    privateEndpointNetworkPolicies: 'Disabled'
     networkSecurityGroup: {
       id: nsg.id
     }
@@ -68,6 +77,7 @@ resource peSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   name: 'snet-private-endpoints'
   properties: {
     addressPrefix: peSubnetPrefix
+    privateEndpointNetworkPolicies: 'Disabled'
   }
 }
 
