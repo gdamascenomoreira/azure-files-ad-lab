@@ -17,6 +17,7 @@ param clientSubnetPrefix string = '10.10.2.0/24'
 param peSubnetPrefix string = '10.10.3.0/24'
 
 // Network Security Group
+
 resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
   name: '${vnetName}-nsg'
   location: location
@@ -26,10 +27,10 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
 }
 
 // Virtual Network
+
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName
   location: location
-
   properties: {
     addressSpace: {
       addressPrefixes: [
@@ -46,6 +47,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
 }
 
 // Domain Controller Subnet
+
 resource dcSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   parent: vnet
   name: 'snet-dc'
@@ -59,6 +61,7 @@ resource dcSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
 }
 
 // Client Subnet
+
 resource clientSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   parent: vnet
   name: 'snet-client'
@@ -72,6 +75,7 @@ resource clientSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
 }
 
 // Private Endpoint Subnet
+
 resource peSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   parent: vnet
   name: 'snet-private-endpoints'
@@ -82,6 +86,7 @@ resource peSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
 }
 
 // Outputs
+
 output vnetId string = vnet.id
 output dcSubnetId string = dcSubnet.id
 output clientSubnetId string = clientSubnet.id

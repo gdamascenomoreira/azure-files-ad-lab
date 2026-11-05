@@ -20,7 +20,6 @@ param subnetId string
 @description('Domain Controller private IP')
 param privateIpAddress string = '10.10.1.10'
 
-
 // Domain Controller Network Interface
 
 resource dcNic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
@@ -34,7 +33,6 @@ resource dcNic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
 
         properties: {
           primary: true
-
           privateIPAllocationMethod: 'Static'
           privateIPAddress: privateIpAddress
 
@@ -47,7 +45,6 @@ resource dcNic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
   }
 }
 
-
 // Domain Controller Virtual Machine
 
 resource dcVM 'Microsoft.Compute/virtualMachines@2024-07-01' = {
@@ -55,7 +52,6 @@ resource dcVM 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   location: location
 
   properties: {
-
     hardwareProfile: {
       vmSize: vmSize
     }
@@ -67,7 +63,6 @@ resource dcVM 'Microsoft.Compute/virtualMachines@2024-07-01' = {
     }
 
     storageProfile: {
-
       imageReference: {
         publisher: 'MicrosoftWindowsServer'
         offer: 'WindowsServer'
@@ -96,7 +91,6 @@ resource dcVM 'Microsoft.Compute/virtualMachines@2024-07-01' = {
     }
   }
 }
-
 
 // Outputs
 

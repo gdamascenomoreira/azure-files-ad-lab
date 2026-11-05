@@ -1480,8 +1480,809 @@ The lab users were validated in Microsoft Entra ID.
 The environment is ready to proceed with the
 Azure Files client infrastructure.
 
-### Phase 4 - Client VM
-Deploy and domain-join the Windows client.
+## Phase 4 - Windows Client VM
+
+### 4.1 Objective
+
+Deploy a Windows Server client VM using Bicep and automatically
+join it to the `lab.contoso.com` Active Directory domain.
+
+The client VM will be used in later phases to reproduce and test:
+
+- Azure Files SMB connectivity
+- Active Directory authentication
+- Kerberos authentication
+- Share-level Azure RBAC permissions
+- NTFS permissions
+- Private Endpoint connectivity
+- Private DNS resolution
+
+### 4.2 Architecture
+
+```text
+Resource Group: rg-fileslab
+Region: North Europe
+
+vnet-fileslab
+Address space: 10.10.0.0/16
+│
+├── snet-dc
+│   Address prefix: 10.10.1.0/24
+│   │
+│   └── vm-dc01
+│       ├── Computer name: DC01
+│       ├── Private IP: 10.10.1.10
+│       ├── Active Directory Domain Services
+│       ├── DNS Server
+│       └── Microsoft Entra Connect Sync
+│
+├── snet-client
+│   Address prefix: 10.10.2.0/24
+│   │
+│   └── vm-client01
+│       ├── Computer name: CLIENT01
+│       ├── Private IP: 10.10.2.10
+│       ├── Windows Server 2022
+│       ├── Domain: lab.contoso.com
+│       └── OU: LabComputers
+│
+└── snet-private-endpoints
+    Address prefix: 10.10.3.0/24
+    │
+    └── Reserved for the Azure Files Private Endpoint
+```
+
+### 4.3 Client VM Configuration
+
+| Property | Configuration |
+|---|---|
+| Azure VM name | `vm-client01` |
+| Windows computer name | `CLIENT01` |
+| Operating system | Windows Server 2022 Datacenter |
+| VM size | `Standard_D2s_v5` |
+| Azure region | North Europe |
+| Virtual network | `vnet-fileslab` |
+| Subnet | `snet-client` |
+| Private IP | `10.10.2.10` |
+| Private IP allocation | Static |
+| Public IP | None |
+| DNS server | `10.10.1.10` |
+| AD DS domain | `lab.contoso.com` |
+| Domain join account | `LAB\labadmin` |
+| Computer OU | `OU=LabComputers,DC=lab,DC=contoso,DC=com` |
+| Administrative access | Azure Bastion |
+
+### 4.4 Active Directory Prerequisites
+
+Before deploying CLIENT01, Domain Controller discovery was validated
+from DC01:
+
+```powershell
+nltest /dsgetdc:lab.contoso.com
+```
+
+Result:
+
+```text
+Domain Controller: DC01.lab.contoso.com
+Address: 10.10.1.10
+Domain: lab.contoso.com
+Forest: lab.contoso.com
+Site: Default-First-Site-Name
+```
+
+The returned flags confirmed that DC01 provides:
+
+- Primary Domain Controller services
+- Global Catalog services
+- LDAP
+- Kerberos Key Distribution Center services
+- Time services
+- Writable directory services
+- DNS services
+
+The target computer OU was validated using:
+
+```powershell
+Get-ADOrganizationalUnit `
+  -Filter "Name -eq 'LabComputers'"
+```
+
+Result:
+
+```text
+OU=LabComputers,DC=lab,DC=contoso,DC=com
+```
+
+### 4.5 Network Prerequisites
+
+The client subnet was validated using:
+
+```powershell
+az network vnet subnet show `
+  --resource-group rg-fileslab `
+  --vnet-name vnet-fileslab `
+  --name snet-client `
+  --query "{Name:name,AddressPrefix:addressPrefix}" `
+  --output table
+```
+
+Result:
+
+```text
+Name: snet-client
+Address prefix: 10.10.2.0/24
+```
+
+The VNet DNS configuration was validated using:
+
+```powershell
+az network vnet show `
+  --resource-group rg-fileslab `
+  --name vnet-fileslab `
+  --query "dhcpOptions.dnsServers" `
+  --output json
+```
+
+Result:
+
+```json
+[
+  "10.10.1.10"
+]
+```
+
+This configuration ensures that CLIENT01 uses DC01 for Active
+Directory name resolution.
+
+### 4.6 Infrastructure as Code
+
+The client VM infrastructure is defined in:
+
+```text
+modules/clientVM.bicep
+```
+
+The module deploys:
+
+- Windows Server virtual machine
+- Azure network interface
+- Static private IP reservation
+- Managed operating system disk
+- Active Directory domain join extension
+
+The module is called from:
+
+```text
+main.bicep
+```
+
+### 4.7 Client Network Interface
+
+The following Bicep resource creates the client network interface:
+
+```bicep
+resource clientNic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
+  name: '${vmName}-nic'
+  location: location
+  properties: {
+    ipConfigurations: [
+      {
+        name: 'ipconfig1'
+        properties: {
+          primary: true
+          privateIPAllocationMethod: 'Static'
+          privateIPAddress: privateIpAddress
+          subnet: {
+            id: subnetId
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+The network interface uses:
+
+```text
+Private IP: 10.10.2.10
+Allocation: Static
+Subnet: snet-client
+```
+
+No public IP address is created.
+
+### 4.8 Client Virtual Machine
+
+The client VM is deployed with:
+
+```bicep
+resource clientVM 'Microsoft.Compute/virtualMachines@2024-07-01' = {
+  name: vmName
+  location: location
+  properties: {
+    hardwareProfile: {
+      vmSize: vmSize
+    }
+    osProfile: {
+      computerName: computerName
+      adminUsername: adminUsername
+      adminPassword: adminPassword
+    }
+    storageProfile: {
+      imageReference: {
+        publisher: 'MicrosoftWindowsServer'
+        offer: 'WindowsServer'
+        sku: '2022-datacenter-g2'
+        version: 'latest'
+      }
+      osDisk: {
+        createOption: 'FromImage'
+        managedDisk: {
+          storageAccountType: 'Standard_LRS'
+        }
+      }
+    }
+    networkProfile: {
+      networkInterfaces: [
+        {
+          id: clientNic.id
+          properties: {
+            primary: true
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+### 4.9 Domain Join Automation
+
+The client VM is automatically joined to Active Directory using
+the `JsonADDomainExtension`.
+
+```bicep
+resource domainJoinExtension 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = {
+  parent: clientVM
+  name: 'joindomain'
+  location: location
+  properties: {
+    publisher: 'Microsoft.Compute'
+    type: 'JsonADDomainExtension'
+    typeHandlerVersion: '1.3'
+    autoUpgradeMinorVersion: true
+    settings: {
+      Name: domainName
+      User: domainJoinUsername
+      OUPath: ouPath
+      Restart: 'true'
+      Options: 3
+    }
+    protectedSettings: {
+      Password: domainJoinPassword
+    }
+  }
+}
+```
+
+The extension performs the following actions:
+
+1. Resolves the `lab.contoso.com` domain through DC01.
+2. Authenticates using the supplied domain join account.
+3. Creates or updates the CLIENT01 computer account.
+4. Places the computer account in the `LabComputers` OU.
+5. Joins CLIENT01 to `lab.contoso.com`.
+6. Restarts Windows to complete the operation.
+
+The domain join password is stored in `protectedSettings`.
+
+No passwords are committed to the repository.
+
+### 4.10 Secure Deployment Parameters
+
+The deployment uses three secure parameters:
+
+```text
+FILESLAB_VM_PASSWORD
+FILESLAB_CLIENT_PASSWORD
+FILESLAB_DOMAINJOIN_PASSWORD
+```
+
+These values are read from environment variables in
+`main.bicepparam`:
+
+```bicep
+param adminPassword = readEnvironmentVariable('FILESLAB_VM_PASSWORD')
+
+param clientAdminPassword =
+  readEnvironmentVariable('FILESLAB_CLIENT_PASSWORD')
+
+param domainJoinPassword =
+  readEnvironmentVariable('FILESLAB_DOMAINJOIN_PASSWORD')
+```
+
+The environment variables were validated without displaying
+their contents:
+
+```text
+FILESLAB_VM_PASSWORD             True
+FILESLAB_CLIENT_PASSWORD         True
+FILESLAB_DOMAINJOIN_PASSWORD     True
+```
+
+The values existed only in the current PowerShell process.
+
+### 4.11 Main Bicep Orchestration
+
+The client module is called from `main.bicep`:
+
+```bicep
+module client './modules/clientVM.bicep' = {
+  name: 'clientDeployment'
+  params: {
+    location: location
+    vmName: 'vm-client01'
+    computerName: 'CLIENT01'
+    vmSize: clientVmSize
+    adminUsername: clientAdminUsername
+    adminPassword: clientAdminPassword
+    subnetId: networking.outputs.clientSubnetId
+    privateIpAddress: '10.10.2.10'
+    domainName: 'lab.contoso.com'
+    domainJoinUsername: 'LAB\\labadmin'
+    domainJoinPassword: domainJoinPassword
+    ouPath: 'OU=LabComputers,DC=lab,DC=contoso,DC=com'
+  }
+}
+```
+
+The main deployment returns:
+
+```bicep
+output clientVmId string = client.outputs.vmId
+output clientVmName string = client.outputs.vmName
+output clientPrivateIp string = client.outputs.privateIp
+```
+
+### 4.12 Deployment
+
+The deployment was performed using:
+
+```powershell
+az deployment group create `
+  --resource-group rg-fileslab `
+  --template-file main.bicep `
+  --parameters main.bicepparam
+```
+
+Deployment result:
+
+```text
+Provisioning state: Succeeded
+Deployment mode: Incremental
+Deployment duration: Approximately 3 minutes and 22 seconds
+```
+
+The deployment created:
+
+```text
+vm-client01
+vm-client01-nic
+vm-client01/extensions/joindomain
+```
+
+Deployment outputs included:
+
+```text
+Client VM name: vm-client01
+Client private IP: 10.10.2.10
+Client subnet: snet-client
+```
+
+### 4.13 Azure Resource Validation
+
+The VM was validated using:
+
+```powershell
+az vm show `
+  --resource-group rg-fileslab `
+  --name vm-client01 `
+  --show-details `
+  --output table
+```
+
+Result:
+
+```text
+Name: vm-client01
+Resource group: rg-fileslab
+Power state: VM running
+Location: northeurope
+Public IP: None
+```
+
+The NIC was validated using:
+
+```powershell
+az network nic show `
+  --resource-group rg-fileslab `
+  --name vm-client01-nic `
+  --query "ipConfigurations[].{Name:name,PrivateIP:privateIPAddress,Allocation:privateIPAllocationMethod}" `
+  --output table
+```
+
+Result:
+
+```text
+Name: ipconfig1
+Private IP: 10.10.2.10
+Allocation: Static
+```
+
+### 4.14 Domain Join Extension Validation
+
+The extension was validated using:
+
+```powershell
+az vm extension show `
+  --resource-group rg-fileslab `
+  --vm-name vm-client01 `
+  --name joindomain `
+  --output json
+```
+
+Result:
+
+```text
+Extension: joindomain
+Publisher: Microsoft.Compute
+Type: JsonADDomainExtension
+Version: 1.3
+Domain: lab.contoso.com
+OU: OU=LabComputers,DC=lab,DC=contoso,DC=com
+Restart: Enabled
+Provisioning state: Succeeded
+```
+
+Protected settings and credentials were not displayed.
+
+### 4.15 Windows and Domain Membership Validation
+
+After connecting to CLIENT01 through Azure Bastion, the computer
+name was validated:
+
+```powershell
+hostname
+```
+
+Result:
+
+```text
+CLIENT01
+```
+
+Domain membership was validated using:
+
+```powershell
+Get-CimInstance Win32_ComputerSystem |
+  Select-Object Name,Domain,PartOfDomain
+```
+
+Result:
+
+```text
+Name: CLIENT01
+Domain: lab.contoso.com
+PartOfDomain: True
+```
+
+### 4.16 DNS Validation
+
+The client DNS configuration was checked using:
+
+```powershell
+Get-DnsClientServerAddress -AddressFamily IPv4
+```
+
+Result:
+
+```text
+Interface: Ethernet 2
+DNS server: 10.10.1.10
+```
+
+CLIENT01 correctly uses DC01 as its DNS server.
+
+### 4.17 Domain Controller Discovery
+
+Domain Controller discovery was tested using:
+
+```powershell
+nltest /dsgetdc:lab.contoso.com
+```
+
+Result:
+
+```text
+Domain Controller: DC01.lab.contoso.com
+Address: 10.10.1.10
+Domain: lab.contoso.com
+Forest: lab.contoso.com
+Site: Default-First-Site-Name
+```
+
+The returned flags confirmed:
+
+- Primary Domain Controller
+- Global Catalog
+- LDAP
+- Kerberos Key Distribution Center
+- Time service
+- Writable directory
+- DNS services
+
+### 4.18 Domain Secure Channel
+
+The domain secure channel was tested using:
+
+```powershell
+Test-ComputerSecureChannel
+```
+
+Result:
+
+```text
+True
+```
+
+This confirmed that CLIENT01 has a valid machine-account
+relationship with `lab.contoso.com`.
+
+### 4.19 Active Directory Computer Object
+
+The computer account was queried using:
+
+```powershell
+Get-ADComputer `
+  -Identity CLIENT01 `
+  -Properties DistinguishedName,DNSHostName |
+  Select-Object Name,DNSHostName,DistinguishedName
+```
+
+Result:
+
+```text
+Name: CLIENT01
+DNSHostName: CLIENT01.lab.contoso.com
+DistinguishedName:
+CN=CLIENT01,OU=LabComputers,DC=lab,DC=contoso,DC=com
+```
+
+This confirmed that the domain join extension created the
+computer object in the intended organizational unit.
+
+
+### 4.20 Troubleshooting
+
+#### Issue 1: Invalid Environment Variable Method
+
+The first password helper attempted to call:
+
+```powershell
+:SetEnvironmentVariable(...)
+```
+
+PowerShell interpreted this as a command name and returned:
+
+```text
+The term ':SetEnvironmentVariable' is not recognized.
+```
+
+The correct .NET method was:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(...)
+```
+
+The environment variables were then created at process scope
+and validated without displaying their contents.
+
+#### Issue 2: Invalid Environment Variable Validation Method
+
+An initial validation block used:
+
+```powershell
+:IsNullOrWhiteSpace(...)
+```
+
+This caused a PowerShell parser error.
+
+The variables were instead safely validated using:
+
+```powershell
+Test-Path "Env:<variable-name>"
+```
+
+All three required variables returned `True`.
+
+#### Issue 3: Client Module Added to the Wrong Bicep File
+
+The client module was initially declared inside:
+
+```text
+modules/domainController.bicep
+```
+
+This caused the path to resolve as:
+
+```text
+modules/modules/clientVM.bicep
+```
+
+Bicep returned:
+
+```text
+BCP091:
+Could not find a part of the path
+modules\modules\clientVM.bicep.
+```
+
+The client module declaration was removed from
+`domainController.bicep` and added to `main.bicep`.
+
+#### Issue 4: Undefined Client Module Outputs
+
+The initial `main.bicep` contained:
+
+```bicep
+output clientVmId string = client.outputs.vmId
+```
+
+but no valid `client` module declaration existed in that file.
+
+Bicep returned:
+
+```text
+BCP057:
+The name "client" does not exist in the current context.
+```
+
+The corrected `module client` declaration was added to
+`main.bicep`.
+
+#### Issue 5: Unused Client Parameters
+
+Bicep initially reported the following parameters as unused:
+
+```text
+clientAdminUsername
+clientAdminPassword
+domainJoinPassword
+clientVmSize
+```
+
+These warnings occurred because the client module declaration
+was missing from `main.bicep`.
+
+Passing the parameters into the corrected client module resolved
+the issue.
+
+#### Issue 6: Referenced Module Error
+
+Bicep returned:
+
+```text
+BCP104:
+The referenced module has errors.
+```
+
+This was a secondary error caused by the invalid client module
+declaration inside `domainController.bicep`.
+
+Correcting the module placement resolved the referenced-module
+error.
+
+#### Issue 7: Active Directory Cmdlet Unavailable on CLIENT01
+
+The following command initially failed:
+
+```powershell
+Get-ADComputer CLIENT01
+```
+
+Error:
+
+```text
+Get-ADComputer is not recognized.
+```
+
+The Active Directory PowerShell module was not installed on
+CLIENT01.
+
+The required management component was installed using:
+
+```powershell
+Install-WindowsFeature RSAT-AD-PowerShell
+```
+
+Result:
+
+```text
+Success: True
+Restart required: No
+```
+
+After installing the feature, `Get-ADComputer` completed
+successfully.
+
+Installing RSAT was useful for validation but is not required
+for normal Azure Files SMB access.
+
+#### Issue 8: Empty Kerberos Cache
+
+The initial `klist` command returned zero cached tickets.
+
+The domain join itself remained healthy, as demonstrated by:
+
+- Successful domain membership
+- Correct DNS configuration
+- Successful Domain Controller discovery
+- Healthy secure channel
+- Correct Active Directory computer object
+
+A new interactive sign-in using a domain account is required
+to complete user-session Kerberos validation.
+
+### 4.22 Validation Checklist
+
+- [x] Active Directory Domain Controller reachable
+- [x] LabComputers OU exists
+- [x] Client subnet validated
+- [x] VNet DNS configured as 10.10.1.10
+- [x] Client Bicep module created
+- [x] Client network interface defined
+- [x] Client VM defined
+- [x] Domain join extension defined
+- [x] Secure parameters configured
+- [x] Client module added to main.bicep
+- [x] Bicep module errors resolved
+- [x] Environment variables created
+- [x] Environment variables validated
+- [x] Deployment completed successfully
+- [x] Client VM deployed
+- [x] Client NIC deployed
+- [x] Client private IP configured as 10.10.2.10
+- [x] Client VM running
+- [x] Public IP not assigned
+- [x] Domain join extension succeeded
+- [x] CLIENT01 joined to lab.contoso.com
+- [x] Client DNS configured as 10.10.1.10
+- [x] Domain Controller discovery succeeded
+- [x] Domain secure channel validated
+- [x] RSAT Active Directory PowerShell module installed
+- [x] CLIENT01 computer account validated
+- [x] CLIENT01 computer account placed in LabComputers OU
+
+
+### 4.23 Phase 4 Status
+
+Phase 4 infrastructure deployment is complete.
+
+CLIENT01 is:
+
+- Running successfully
+- Configured with private IP `10.10.2.10`
+- Using DC01 for DNS
+- Joined to `lab.contoso.com`
+- Connected through a valid domain secure channel
+- Registered in the `LabComputers` OU
+- Ready for Azure Files testing
+
+The remaining validation is to sign in interactively using a
+domain account and confirm that the user session receives
+Kerberos tickets.
 
 ### Phase 5 - Azure Files
 Deploy the storage account, file share,
@@ -1514,7 +2315,3 @@ git remote -v
 
 Created the initial project folders and files.
 
-## 5. Troubleshooting
-
-Troubleshooting procedures and findings will be
-documented as the project progresses.
