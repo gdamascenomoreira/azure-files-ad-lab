@@ -77,6 +77,11 @@ resource dcVM 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   name: vmName
   location: location
 
+  // Used to join the storage account to AD DS (filesAdJoin.bicep)
+  identity: {
+    type: 'SystemAssigned'
+  }
+
   properties: {
     hardwareProfile: {
       vmSize: vmSize
@@ -220,3 +225,4 @@ output vmName string = dcVM.name
 output privateIp string = privateIpAddress
 output nicId string = dcNic.id
 output domainName string = domainName
+output principalId string = dcVM.identity.principalId
