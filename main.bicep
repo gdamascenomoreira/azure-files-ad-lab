@@ -8,13 +8,33 @@ param location string = resourceGroup().location
 @description('Virtual Network name')
 param vnetName string = 'vnet-fileslab'
 
+// Active Directory Parameters
+
+@description('FQDN of the AD DS forest root domain')
+param domainName string = 'lab.contoso.com'
+
+@description('NetBIOS name of the AD DS domain')
+@maxLength(15)
+param netbiosName string = 'LAB'
+
+@description('UPN suffix for the lab users (verified Microsoft Entra domain). Empty = use the AD DS domain name.')
+param upnSuffix string = ''
+
+@secure()
+@description('Directory Services Restore Mode (DSRM) password')
+param dsrmPassword string
+
+@secure()
+@description('Password for the lab test users (LabUser1, LabUser2)')
+param labUserPassword string
+
 // Domain Controller Parameters
 
-@description('Domain Controller administrator username')
+@description('Domain Controller administrator username (becomes a Domain Admin)')
 param adminUsername string = 'labadmin'
 
 @secure()
-@description('Domain Controller administrator password')
+@description('Domain Controller administrator password (also used for the domain join)')
 param adminPassword string
 
 @description('Domain Controller VM size')
@@ -28,10 +48,6 @@ param clientAdminUsername string = 'clientadmin'
 @secure()
 @description('Client VM administrator password')
 param clientAdminPassword string
-
-@secure()
-@description('Domain join password')
-param domainJoinPassword string
 
 @description('Client VM size')
 param clientVmSize string = 'Standard_D2s_v5'
@@ -48,6 +64,13 @@ param fileShareName string = 'fileshare'
 @minValue(1)
 param fileShareQuotaGiB int = 100
 
+// Derived Active Directory values
+// lab.contoso.com -> DC=lab,DC=contoso,DC=com
+
+var domainDN = join(map(split(domainName, '.'), part => 'DC=${part}'), ',')
+var computersOuPath = 'OU=LabComputers,${domainDN}'
+var dcPrivateIp = '10.10.1.10'
+
 // Networking Module
 
 module networking './modules/network.bicep' = {
@@ -60,6 +83,7 @@ module networking './modules/network.bicep' = {
 }
 
 // Domain Controller Module
+// Deploys the VM, installs AD DS, promotes it and configures the lab objects.
 
 module domainController './modules/domainController.bicep' = {
   name: 'domainControllerDeployment'
@@ -71,14 +95,24 @@ module domainController './modules/domainController.bicep' = {
     adminUsername: adminUsername
     adminPassword: adminPassword
     subnetId: networking.outputs.dcSubnetId
-    privateIpAddress: '10.10.1.10'
+    privateIpAddress: dcPrivateIp
+    domainName: domainName
+    netbiosName: netbiosName
+    dsrmPassword: dsrmPassword
+    upnSuffix: upnSuffix
+    labUserPassword: labUserPassword
   }
 }
 
 // Client VM Module
+// Waits for the whole Domain Controller module, so the domain
+// and the LabComputers OU exist before the domain join runs.
 
 module client './modules/clientVM.bicep' = {
   name: 'clientDeployment'
+  dependsOn: [
+    domainController
+  ]
 
   params: {
     location: location
@@ -89,14 +123,15 @@ module client './modules/clientVM.bicep' = {
     adminPassword: clientAdminPassword
     subnetId: networking.outputs.clientSubnetId
     privateIpAddress: '10.10.2.10'
-    domainName: 'lab.contoso.com'
-    domainJoinUsername: 'LAB\\labadmin'
-    domainJoinPassword: domainJoinPassword
-    ouPath: 'OU=LabComputers,DC=lab,DC=contoso,DC=com'
+    domainName: domainName
+    domainJoinUsername: '${netbiosName}\\${adminUsername}'
+    domainJoinPassword: adminPassword
+    ouPath: computersOuPath
   }
 }
 
 // Azure Files Module
+// Independent from AD, so it deploys in parallel with the Domain Controller.
 
 module storage './modules/storage.bicep' = {
   name: 'storageDeployment'
@@ -124,6 +159,8 @@ output peSubnetId string = networking.outputs.peSubnetId
 output dcVmId string = domainController.outputs.vmId
 output dcVmName string = domainController.outputs.vmName
 output dcPrivateIp string = domainController.outputs.privateIp
+output domainName string = domainController.outputs.domainName
+output computersOuPath string = computersOuPath
 
 // Client VM Outputs
 
