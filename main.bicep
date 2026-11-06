@@ -54,8 +54,10 @@ param clientVmSize string = 'Standard_D2s_v5'
 
 // Azure Files Parameters
 
-@description('Globally unique storage account name')
-param storageAccountName string = 'stfileslab${uniqueString(subscription().id, resourceGroup().id)}'
+@description('Globally unique storage account name (max 15 characters: it becomes an AD computer name)')
+@minLength(3)
+@maxLength(15)
+param storageAccountName string = 'stfiles${take(uniqueString(subscription().id, resourceGroup().id), 8)}'
 
 @description('Azure file share name')
 param fileShareName string = 'fileshare'
@@ -144,6 +146,21 @@ module storage './modules/storage.bicep' = {
     privateEndpointSubnetId: networking.outputs.peSubnetId
     vnetId: networking.outputs.vnetId
     privateEndpointName: 'pe-fileslab-file'
+  }
+}
+
+// Azure Files AD DS Join Module
+// Runs after the DC is configured (LabComputers OU exists) and the storage account exists.
+
+module filesAdJoin './modules/filesAdJoin.bicep' = {
+  name: 'filesAdJoinDeployment'
+
+  params: {
+    location: location
+    dcVmName: domainController.outputs.vmName
+    dcPrincipalId: domainController.outputs.principalId
+    storageAccountName: storage.outputs.storageAccountName
+    ouPath: computersOuPath
   }
 }
 
