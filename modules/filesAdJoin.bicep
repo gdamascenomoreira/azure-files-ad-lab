@@ -20,7 +20,7 @@ param ouPath string
   'StorageFileDataSmbShareContributor'
   'StorageFileDataSmbShareElevatedContributor'
 ])
-param defaultSharePermission string = 'StorageFileDataSmbShareContributor'
+param defaultSharePermission string = 'None'
 
 // Storage Account Contributor: read the account, regenerate and
 // list kerb keys, and update the AD DS properties
