@@ -66,14 +66,14 @@ param fileShareName string = 'fileshare'
 @minValue(1)
 param fileShareQuotaGiB int = 100
 
-@description('Share-level permission for every authenticated AD DS identity (works without Entra Connect). Use None to rely only on group RBAC.')
+@description('Share-level permission for every authenticated AD DS identity. None (default) = access only through the RBAC roles of the synced groups, like most customers.')
 @allowed([
   'None'
   'StorageFileDataSmbShareReader'
   'StorageFileDataSmbShareContributor'
   'StorageFileDataSmbShareElevatedContributor'
 ])
-param defaultSharePermission string = 'StorageFileDataSmbShareContributor'
+param defaultSharePermission string = 'None'
 
 // Derived Active Directory values
 // lab.contoso.com -> DC=lab,DC=contoso,DC=com
