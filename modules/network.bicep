@@ -16,6 +16,9 @@ param clientSubnetPrefix string = '10.10.2.0/24'
 @description('Private Endpoint subnet prefix')
 param peSubnetPrefix string = '10.10.3.0/24'
 
+@description('DNS server for the VNet (Domain Controller IP)')
+param dnsServerIp string = '10.10.1.10'
+
 // Network Security Group
 
 resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
@@ -27,6 +30,11 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
 }
 
 // Virtual Network
+// Subnets are declared inline, not as separate child resources:
+//  - separate subnet resources are written in parallel on the same VNet,
+//    which fails with AnotherOperationInProgress
+//  - on a redeploy, a VNet without its subnets in the body would try
+//    to remove subnets that are in use
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName
@@ -40,54 +48,59 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
 
     dhcpOptions: {
       dnsServers: [
-        '10.10.1.10'
+        dnsServerIp
       ]
     }
+
+    subnets: [
+      {
+        name: 'snet-dc'
+        properties: {
+          addressPrefix: dcSubnetPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
+          networkSecurityGroup: {
+            id: nsg.id
+          }
+        }
+      }
+      {
+        name: 'snet-client'
+        properties: {
+          addressPrefix: clientSubnetPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
+          networkSecurityGroup: {
+            id: nsg.id
+          }
+        }
+      }
+      {
+        name: 'snet-private-endpoints'
+        properties: {
+          addressPrefix: peSubnetPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
+    ]
   }
-}
 
-// Domain Controller Subnet
+  // References to the inline subnets (used for the outputs)
 
-resource dcSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
-  parent: vnet
-  name: 'snet-dc'
-  properties: {
-    addressPrefix: dcSubnetPrefix
-    privateEndpointNetworkPolicies: 'Disabled'
-    networkSecurityGroup: {
-      id: nsg.id
-    }
+  resource dcSubnet 'subnets' existing = {
+    name: 'snet-dc'
   }
-}
 
-// Client Subnet
-
-resource clientSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
-  parent: vnet
-  name: 'snet-client'
-  properties: {
-    addressPrefix: clientSubnetPrefix
-    privateEndpointNetworkPolicies: 'Disabled'
-    networkSecurityGroup: {
-      id: nsg.id
-    }
+  resource clientSubnet 'subnets' existing = {
+    name: 'snet-client'
   }
-}
 
-// Private Endpoint Subnet
-
-resource peSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
-  parent: vnet
-  name: 'snet-private-endpoints'
-  properties: {
-    addressPrefix: peSubnetPrefix
-    privateEndpointNetworkPolicies: 'Disabled'
+  resource peSubnet 'subnets' existing = {
+    name: 'snet-private-endpoints'
   }
 }
 
 // Outputs
 
 output vnetId string = vnet.id
-output dcSubnetId string = dcSubnet.id
-output clientSubnetId string = clientSubnet.id
-output peSubnetId string = peSubnet.id
+output dcSubnetId string = vnet::dcSubnet.id
+output clientSubnetId string = vnet::clientSubnet.id
+output peSubnetId string = vnet::peSubnet.id
