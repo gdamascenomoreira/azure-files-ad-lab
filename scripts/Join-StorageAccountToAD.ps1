@@ -17,7 +17,11 @@
       4. Creates (or updates) the computer account that represents the
          storage account: SPN cifs/<account>.file.<suffix>, AES-256,
          password = kerb1 key
-      5. Enables AD DS authentication on the storage account
+      5. Enables AD DS authentication on the storage account and sets
+         the default share-level permission
+
+    If the account is already joined, only the default share-level
+    permission is updated (when it changed).
 
     Requires the managed identity to have Storage Account Contributor
     on the storage account.
@@ -34,6 +38,10 @@
 .PARAMETER StorageSuffix
     Storage DNS suffix (environment().suffixes.storage), e.g. core.windows.net.
 
+.PARAMETER DefaultSharePermission
+    Share-level permission for every authenticated AD DS identity,
+    including users that are not synced to Microsoft Entra ID.
+
 .PARAMETER TimeoutMinutes
     Maximum time to wait for the managed identity role assignment to apply.
 #>
@@ -48,6 +56,13 @@ param(
     [string]$ArmEndpoint = 'https://management.azure.com/',
 
     [string]$StorageSuffix = 'core.windows.net',
+
+    [ValidateSet(
+        'None',
+        'StorageFileDataSmbShareReader',
+        'StorageFileDataSmbShareContributor',
+        'StorageFileDataSmbShareElevatedContributor')]
+    [string]$DefaultSharePermission = 'None',
 
     [int]$TimeoutMinutes = 15
 )
@@ -145,70 +160,82 @@ $account  = Invoke-Arm -Method Get -Path $StorageAccountId
 $computer = Get-ADComputer -Filter "Name -eq '$storageAccountName'"
 $adConfig = $account.properties.azureFilesIdentityBasedAuthentication
 
-# 2. Skip if already joined to this domain with this computer account
+# 2. Already joined? Then only the default share permission may need an update
 
-if ($computer -and
+$alreadyJoined = $computer -and
     $adConfig.directoryServiceOptions -eq 'AD' -and
     $adConfig.activeDirectoryProperties.domainGuid -eq $domain.ObjectGUID.Guid -and
-    $adConfig.activeDirectoryProperties.azureStorageSid -eq $computer.SID.Value) {
+    $adConfig.activeDirectoryProperties.azureStorageSid -eq $computer.SID.Value
 
-    Write-Output 'Storage account is already joined to this domain. Nothing to do.'
-    exit 0
-}
+$currentPermission = if ($adConfig.defaultSharePermission) { $adConfig.defaultSharePermission } else { 'None' }
 
-# 3. Regenerate and read the kerb1 key
+if ($alreadyJoined) {
 
-Write-Output 'Regenerating kerb1 key...'
+    if ($currentPermission -eq $DefaultSharePermission) {
+        Write-Output "Storage account is already joined to this domain (default share permission: $currentPermission). Nothing to do."
+        exit 0
+    }
 
-Invoke-Arm -Method Post -Path "$StorageAccountId/regenerateKey" -Body @{ keyName = 'kerb1' } | Out-Null
-
-$keys = Invoke-Arm -Method Post -Path "$StorageAccountId/listKeys?`$expand=kerb"
-$kerb1 = ($keys.keys | Where-Object { $_.keyName -eq 'kerb1' }).value
-
-if (-not $kerb1) {
-    throw 'Could not read the kerb1 key.'
-}
-
-$securePassword = ConvertTo-SecureString $kerb1 -AsPlainText -Force
-
-# 4. Computer account that represents the storage account
-
-if (-not $computer) {
-
-    New-ADComputer `
-        -Name $storageAccountName `
-        -Path $OuPath `
-        -Description "Azure Files storage account $storageAccountName" `
-        -ServicePrincipalNames $spn `
-        -KerberosEncryptionType AES256 `
-        -AccountPassword $securePassword `
-        -PasswordNeverExpires $true `
-        -Enabled $true
-
-    Write-Output "Created computer account: $storageAccountName in $OuPath"
+    Write-Output "Storage account is already joined. Updating default share permission: $currentPermission -> $DefaultSharePermission"
 }
 else {
 
-    Set-ADComputer `
-        -Identity $computer `
-        -ServicePrincipalNames @{ Replace = $spn } `
-        -KerberosEncryptionType AES256
+    # 3. Regenerate and read the kerb1 key
 
-    Set-ADAccountPassword -Identity $computer -Reset -NewPassword $securePassword
+    Write-Output 'Regenerating kerb1 key...'
 
-    Write-Output "Updated computer account and password: $storageAccountName"
+    Invoke-Arm -Method Post -Path "$StorageAccountId/regenerateKey" -Body @{ keyName = 'kerb1' } | Out-Null
+
+    $keys = Invoke-Arm -Method Post -Path "$StorageAccountId/listKeys?`$expand=kerb"
+    $kerb1 = ($keys.keys | Where-Object { $_.keyName -eq 'kerb1' }).value
+
+    if (-not $kerb1) {
+        throw 'Could not read the kerb1 key.'
+    }
+
+    $securePassword = ConvertTo-SecureString $kerb1 -AsPlainText -Force
+
+    # 4. Computer account that represents the storage account
+
+    if (-not $computer) {
+
+        New-ADComputer `
+            -Name $storageAccountName `
+            -Path $OuPath `
+            -Description "Azure Files storage account $storageAccountName" `
+            -ServicePrincipalNames $spn `
+            -KerberosEncryptionType AES256 `
+            -AccountPassword $securePassword `
+            -PasswordNeverExpires $true `
+            -Enabled $true
+
+        Write-Output "Created computer account: $storageAccountName in $OuPath"
+    }
+    else {
+
+        Set-ADComputer `
+            -Identity $computer `
+            -ServicePrincipalNames @{ Replace = $spn } `
+            -KerberosEncryptionType AES256
+
+        Set-ADAccountPassword -Identity $computer -Reset -NewPassword $securePassword
+
+        Write-Output "Updated computer account and password: $storageAccountName"
+    }
+
 }
 
 $computer = Get-ADComputer -Identity $storageAccountName
 
-# 5. Enable AD DS authentication on the storage account
+# 5. Enable AD DS authentication and set the default share permission
 
-Write-Output 'Enabling AD DS authentication on the storage account...'
+Write-Output 'Configuring AD DS authentication on the storage account...'
 
 $body = @{
     properties = @{
         azureFilesIdentityBasedAuthentication = @{
             directoryServiceOptions   = 'AD'
+            defaultSharePermission    = $DefaultSharePermission
             activeDirectoryProperties = @{
                 domainName        = $domain.DNSRoot
                 netBiosDomainName = $domain.NetBIOSName
@@ -229,5 +256,6 @@ $applied = $result.properties.azureFilesIdentityBasedAuthentication
 Write-Output "Directory service: $($applied.directoryServiceOptions)"
 Write-Output "Domain: $($applied.activeDirectoryProperties.domainName)"
 Write-Output "Storage SID: $($applied.activeDirectoryProperties.azureStorageSid)"
+Write-Output "Default share permission: $($applied.defaultSharePermission)"
 Write-Output "SPN: $spn"
-Write-Output 'Storage account AD DS join completed.'
+Write-Output 'Storage account AD DS configuration completed.'
