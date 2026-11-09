@@ -26,4 +26,4 @@ param clientAdminPassword = readEnvironmentVariable('FILESLAB_CLIENT_PASSWORD')
 // Azure Files
 param fileShareName = 'fileshare'
 param fileShareQuotaGiB = 100
-param defaultSharePermission = 'StorageFileDataSmbShareContributor'
+param defaultSharePermission = 'None'
