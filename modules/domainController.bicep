@@ -218,6 +218,28 @@ resource configureAd 'Microsoft.Compute/virtualMachines/runCommands@2024-07-01' 
   }
 }
 
+// Step 5: Prepare DC01 for Microsoft Entra Connect Sync
+// TLS 1.2, IE ESC off, prerequisite checks, download shortcut.
+// The Entra Connect wizard itself is run manually (unattended install isn't supported).
+
+resource prepareEntraConnect 'Microsoft.Compute/virtualMachines/runCommands@2024-07-01' = {
+  parent: dcVM
+  name: 'prepare-entra-connect'
+  location: location
+  dependsOn: [
+    configureAd
+  ]
+
+  properties: {
+    source: {
+      script: loadTextContent('../scripts/Prepare-EntraConnect.ps1')
+    }
+    asyncExecution: false
+    timeoutInSeconds: 900
+    treatFailureAsDeploymentFailure: true
+  }
+}
+
 // Outputs
 
 output vmId string = dcVM.id
