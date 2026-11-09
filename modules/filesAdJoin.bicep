@@ -13,6 +13,15 @@ param storageAccountName string
 @description('OU for the storage account computer object')
 param ouPath string
 
+@description('Share-level permission for every authenticated AD DS identity')
+@allowed([
+  'None'
+  'StorageFileDataSmbShareReader'
+  'StorageFileDataSmbShareContributor'
+  'StorageFileDataSmbShareElevatedContributor'
+])
+param defaultSharePermission string = 'StorageFileDataSmbShareContributor'
+
 // Storage Account Contributor: read the account, regenerate and
 // list kerb keys, and update the AD DS properties
 var storageAccountContributorRoleId = '17d1049b-9a84-46fb-8f53-869881c3d3ab'
@@ -58,6 +67,7 @@ resource joinStorage 'Microsoft.Compute/virtualMachines/runCommands@2024-07-01' 
       { name: 'OuPath', value: ouPath }
       { name: 'ArmEndpoint', value: environment().resourceManager }
       { name: 'StorageSuffix', value: environment().suffixes.storage }
+      { name: 'DefaultSharePermission', value: defaultSharePermission }
     ]
     asyncExecution: false
     timeoutInSeconds: 1800
