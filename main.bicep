@@ -66,6 +66,15 @@ param fileShareName string = 'fileshare'
 @minValue(1)
 param fileShareQuotaGiB int = 100
 
+@description('Share-level permission for every authenticated AD DS identity (works without Entra Connect). Use None to rely only on group RBAC.')
+@allowed([
+  'None'
+  'StorageFileDataSmbShareReader'
+  'StorageFileDataSmbShareContributor'
+  'StorageFileDataSmbShareElevatedContributor'
+])
+param defaultSharePermission string = 'StorageFileDataSmbShareContributor'
+
 // Derived Active Directory values
 // lab.contoso.com -> DC=lab,DC=contoso,DC=com
 
@@ -161,6 +170,7 @@ module filesAdJoin './modules/filesAdJoin.bicep' = {
     dcPrincipalId: domainController.outputs.principalId
     storageAccountName: storage.outputs.storageAccountName
     ouPath: computersOuPath
+    defaultSharePermission: defaultSharePermission
   }
 }
 
