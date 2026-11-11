@@ -36,6 +36,15 @@ param domainJoinPassword string
 @description('Target Active Directory OU')
 param ouPath string = 'OU=LabComputers,DC=lab,DC=contoso,DC=com'
 
+@description('Domain groups (names without domain) added to the local Remote Desktop Users group')
+param remoteDesktopGroups array = [
+  'FileShare-Users'
+  'FileShare-Admins'
+]
+
+// LAB\labadmin -> LAB
+var netbiosName = split(domainJoinUsername, '\\')[0]
+
 
 resource clientNic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
   name: '${vmName}-nic'
@@ -128,6 +137,33 @@ resource domainJoinExtension 'Microsoft.Compute/virtualMachines/extensions@2024-
     protectedSettings: {
       Password: domainJoinPassword
     }
+  }
+}
+
+// Prepare CLIENT01: Remote Desktop Users for the lab groups,
+// AD PowerShell module and AzFilesHybrid (Debug-AzStorageAccountAuth)
+
+resource prepareClient 'Microsoft.Compute/virtualMachines/runCommands@2024-07-01' = {
+  parent: clientVM
+  name: 'prepare-client'
+  location: location
+  dependsOn: [
+    domainJoinExtension
+  ]
+
+  properties: {
+    source: {
+      script: loadTextContent('../scripts/Prepare-Client.ps1')
+    }
+    parameters: [
+      {
+        name: 'RemoteDesktopGroups'
+        value: join(map(remoteDesktopGroups, group => '${netbiosName}\\${group}'), ',')
+      }
+    ]
+    asyncExecution: false
+    timeoutInSeconds: 3600
+    treatFailureAsDeploymentFailure: true
   }
 }
 

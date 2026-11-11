@@ -13,8 +13,13 @@
     directory sync is on) and conflict with the next deployment
     (duplicate groups, UPN conflicts for the users).
 
-    The script deletes the objects in the lab OUs in AD and runs a delta
-    sync, so Entra Connect deletes them in Entra ID too.
+    The script deletes the objects in the lab OUs in AD, plus the extra
+    accounts listed in -AdditionalUsers (labadmin by default, which Express
+    settings also sync), and runs a delta sync, so Entra Connect deletes
+    them in Entra ID too.
+
+    Deleting labadmin is safe here: the script runs as SYSTEM, the lab is
+    about to be destroyed, and Entra Connect uses its own connector account.
 
     Deleted users stay in the Entra ID recycle bin for 30 days. Purge
     them afterwards (see the Quick Start, Clean up section).
@@ -24,12 +29,18 @@
 .PARAMETER OrganizationalUnits
     OUs (names under the domain root) whose objects are removed.
 
+.PARAMETER AdditionalUsers
+    Accounts outside the lab OUs to delete as well (sAMAccountName).
+    Use an empty string to skip.
+
 .PARAMETER TimeoutMinutes
     Maximum time to wait for the sync cycle.
 #>
 
 param(
     [string[]]$OrganizationalUnits = @('LabUsers', 'LabGroups'),
+
+    [string]$AdditionalUsers = 'labadmin',
 
     [int]$TimeoutMinutes = 20
 )
@@ -77,6 +88,21 @@ foreach ($ou in $OrganizationalUnits) {
     foreach ($object in $objects) {
         Remove-ADObject -Identity $object -Recursive -Confirm:$false
         Write-Output "Deleted in AD: $($object.Name) ($($object.ObjectClass))"
+    }
+}
+
+# Accounts outside the lab OUs (synced with Express settings)
+
+$extra = $AdditionalUsers.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
+foreach ($sam in $extra) {
+    $user = Get-ADUser -Filter "SamAccountName -eq '$sam'"
+    if ($user) {
+        Remove-ADUser -Identity $user -Confirm:$false
+        Write-Output "Deleted in AD: $sam (user)"
+    }
+    else {
+        Write-Output "User not found, skipping: $sam"
     }
 }
 

@@ -81,6 +81,11 @@ $tcp = Test-NetConnection -ComputerName $fqdn -Port 445 -WarningAction SilentlyC
 Write-Check 'TCP 445' $tcp.TcpTestSucceeded "$fqdn ($($tcp.RemoteAddress))"
 
 # 3. Mount without a storage key
+# From here on, native commands (net, klist) write to stderr on failure.
+# Windows PowerShell 5.1 turns that into a terminating error with 'Stop',
+# so errors are handled through $LASTEXITCODE instead.
+
+$ErrorActionPreference = 'Continue'
 
 klist purge -li 0x3e7 | Out-Null
 net use $unc /delete /y 2>&1 | Out-Null
@@ -93,15 +98,18 @@ else {
 }
 
 $mounted = $LASTEXITCODE -eq 0
-Write-Check 'Mount' $mounted ($netUse | Out-String).Trim()
+# "$_" turns error records from stderr into their plain message,
+# without the NativeCommandError details
+$netUseText = (($netUse | ForEach-Object { "$_" } | Where-Object { $_.Trim() }) -join ' ').Trim()
+Write-Check 'Mount' $mounted $netUseText
 
 if ($mounted) {
 
     # 4. Write and read a file
     try {
         $file = Join-Path $unc ("smoke-test-{0}.txt" -f ($identity -replace '[\\$ ()]', '_'))
-        "Smoke test by $identity at $(Get-Date -Format o)" | Set-Content -Path $file
-        $content = Get-Content -Path $file
+        "Smoke test by $identity at $(Get-Date -Format o)" | Set-Content -Path $file -ErrorAction Stop
+        $content = Get-Content -Path $file -ErrorAction Stop
         Write-Check 'Write file' ($null -ne $content) $file
     }
     catch {
@@ -130,7 +138,7 @@ else {
     Write-Output ''
     Write-Output 'Hints:'
     Write-Output '  System error 5 (access denied): no share-level permission. Check the RBAC roles (Set-ShareRbac.ps1) or the default share permission. RBAC changes can take a few minutes to apply.'
-    Write-Output '  System error 1326 / 86: wrong user name or password.'
+    Write-Output '  System error 1326 / 86: wrong password, or the user is not synced to Microsoft Entra ID (share-level RBAC needs the synced identity).'
     Write-Output '  System error 53 / 67: DNS or network. Check the DNS and TCP 445 results above.'
 }
 

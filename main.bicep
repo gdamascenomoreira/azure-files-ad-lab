@@ -174,6 +174,22 @@ module filesAdJoin './modules/filesAdJoin.bicep' = {
   }
 }
 
+// Windows ACLs Module
+// Sets NTFS permissions on the share root from CLIENT01 (needs the
+// domain-joined client and the file share).
+
+module shareAcl './modules/shareAcl.bicep' = {
+  name: 'shareAclDeployment'
+
+  params: {
+    location: location
+    clientVmName: client.outputs.vmName
+    storageAccountName: storage.outputs.storageAccountName
+    fileShareName: storage.outputs.fileShareName
+    netbiosName: netbiosName
+  }
+}
+
 // Networking Outputs
 
 output vnetId string = networking.outputs.vnetId

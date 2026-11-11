@@ -4,15 +4,19 @@
     Microsoft Entra ID.
 
 .DESCRIPTION
-    Optional step, for when Microsoft Entra Connect Sync is running.
-    Runs on your workstation with Azure CLI (az login first).
+    Runs after Microsoft Entra Connect Sync is installed on DC01.
+    Runs on your workstation with Azure CLI (az login to the tenant
+    that owns the subscription first).
 
     Idempotent: existing role assignments are kept, missing ones are added.
 
     For each group it:
-      1. Waits until the group is synced to Entra ID (onPremisesSyncEnabled)
-      2. Fails if more than one synced group has the same name
-         (leftovers from a previous lab forest)
+      1. Reads the domain SID of the current lab forest from the storage
+         account (set by the AD DS join)
+      2. Waits until the group of THIS forest is synced to Entra ID:
+         a synced group whose on-premises SID belongs to that domain.
+         Groups with the same name left over from previous lab forests
+         are ignored.
       3. Assigns the role at the file share scope
 
     Default mapping:
@@ -89,6 +93,20 @@ $shareScope = (Invoke-Az storage share-rm show `
 
 Write-Output "Share scope: $shareScope"
 
+# Domain SID of the current forest, from the storage account AD DS join.
+# Used to pick this forest's groups and ignore leftovers of older labs.
+
+$domainSid = Invoke-Az storage account show `
+    --resource-group $ResourceGroupName `
+    --name $StorageAccountName `
+    --query 'azureFilesIdentityBasedAuthentication.activeDirectoryProperties.domainSid'
+
+if (-not $domainSid) {
+    throw "Storage account $StorageAccountName is not joined to AD DS (no domain SID). Check the join-storage-ad Run Command."
+}
+
+Write-Output "Lab domain SID: $domainSid"
+
 # 2. Groups and role assignments
 
 foreach ($groupName in $GroupRoles.Keys) {
@@ -101,15 +119,23 @@ foreach ($groupName in $GroupRoles.Keys) {
 
     while ($true) {
 
-        $groups = @(Invoke-Az ad group list `
+        $synced = @(Invoke-Az ad group list `
             --filter "displayName eq '$groupName'" `
             --query "[?onPremisesSyncEnabled].{id:id, created:createdDateTime, sid:onPremisesSecurityIdentifier}")
+
+        # Keep only the group of this forest
+        $groups = @($synced | Where-Object { $_.sid -like "$domainSid-*" })
+
+        $others = $synced.Count - $groups.Count
+        if ($others -gt 0) {
+            Write-Output "Ignoring $others synced '$groupName' group(s) from other forests."
+        }
 
         if ($groups.Count -gt 0 -or (Get-Date) -gt $deadline) {
             break
         }
 
-        Write-Output "Group '$groupName' not synced to Entra ID yet. Retrying in 60 seconds..."
+        Write-Output "Group '$groupName' of this forest not synced to Entra ID yet. Retrying in 60 seconds..."
         Start-Sleep -Seconds 60
     }
 
@@ -119,10 +145,11 @@ foreach ($groupName in $GroupRoles.Keys) {
 
     if ($groups.Count -gt 1) {
         $list = ($groups | ForEach-Object { "  $($_.id)  created $($_.created)  SID $($_.sid)" }) -join "`n"
-        throw "Found $($groups.Count) synced groups named '$groupName' (probably from a previous lab forest):`n$list`nDelete the old ones in Entra ID and run again."
+        throw "Found $($groups.Count) synced groups named '$groupName' with this forest's domain SID:`n$list"
     }
 
     $groupId = $groups[0].id
+    Write-Output "Using group: $groupName ($groupId, SID $($groups[0].sid))"
 
     # Assign the role if it isn't there yet
     $existing = @(Invoke-Az role assignment list `

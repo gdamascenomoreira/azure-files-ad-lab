@@ -93,7 +93,7 @@ foreach ($endpoint in 'login.microsoftonline.com', 'graph.microsoft.com') {
     Write-Check "Connectivity $endpoint" $tcp.TcpTestSucceeded "TCP 443 from $($tcp.SourceAddress.IPAddress)"
 }
 
-# 4. Desktop shortcut to the download pagea
+# 4. Desktop shortcut to the download page
 
 $shortcut = 'C:\Users\Public\Desktop\Download Microsoft Entra Connect.url'
 
