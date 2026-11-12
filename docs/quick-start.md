@@ -231,9 +231,14 @@ To check the result:
 
 ```powershell
 $sa = az deployment group show -g $rg -n fileslab --query properties.outputs.storageAccountName.value -o tsv
-$scope = az storage share-rm show -g $rg --storage-account $sa --name fileshare --query id -o tsv
+$saId = az storage account show -g $rg -n $sa --query id -o tsv
+$scope = "$saId/fileServices/default/fileshares/fileshare"
 az role assignment list --scope $scope --query "[].{principal:principalName, role:roleDefinitionName}" -o table
 ```
+
+The list must show `FileShare-Users` and `FileShare-Admins` with their roles.
+
+> **Scope:** share-level roles must be assigned at `<storage-account-id>/fileServices/default/fileshares/<share>` (or on the storage account). Don't use the share's resource ID returned by `az storage share-rm show` (`.../fileServices/default/shares/<share>`): Azure RBAC accepts it and lists the role, but Azure Files doesn't evaluate it, so the mount fails with **System error 5**.
 
 ## 6. Validate
 
@@ -270,7 +275,7 @@ All checks passed.
 
 Azure Files accepts AD DS identities only over Kerberos (NTLM works only with the storage account key), so a successful mount with `LabUser1` confirms DNS, the private endpoint, the domain join, the storage account AD DS join, Kerberos, the sync and the RBAC role of `FileShare-Users`.
 
-> Right after `Set-ShareRbac.ps1`, the mount can fail with **System error 5 (access denied)** while the role assignment is applied. Wait a few minutes and run the test again.
+> Right after `Set-ShareRbac.ps1`, the mount can fail with **System error 5 (access denied)** while the role assignment is applied. Wait a few minutes and run the test again. If it still fails, check that the roles are at the `.../fileshares/<share>` scope (see [step 5](#5-assign-share-level-permissions)).
 
 ### Interactive test
 
@@ -405,7 +410,7 @@ az vm run-command show --name <run-command> --vm-name <vm> -g $rg --expand insta
 | Bastion: "Log in failed" | Use `<user>@lab.contoso.com` |
 | `Set-ShareRbac.ps1` finds no group | Run `Start-ADSyncSyncCycle -PolicyType Delta` on DC01 and run the script again |
 | `net use`: "The password is invalid", then a credentials prompt | The share refused access. Don't type credentials. See [12.2](deployment-guide.md#122-the-password-is-invalid-when-mounting) |
-| Mount fails with System error 5 | Check the RBAC roles at the share scope and wait a few minutes after assigning them. If the tenant has leftovers of a previous lab, see [12.3](deployment-guide.md#123-leftover-objects-from-previous-lab-forests) |
+| Mount fails with System error 5 | Check that the RBAC roles are at the `.../fileServices/default/fileshares/<share>` scope, not `.../shares/<share>` (see [12.6](deployment-guide.md#126-share-level-role-at-the-wrong-scope)), and wait a few minutes after assigning them. If the tenant has leftovers of a previous lab, see [12.3](deployment-guide.md#123-leftover-objects-from-previous-lab-forests) |
 | `az rest`: `'$select' is not recognized` | On Windows, `&` in the URL splits the command. Use `--uri-parameters` |
 | Deployment fails on `wait-for-vm-dc01-reboot` | Register `Microsoft.ContainerInstance`, or check the policy assignments |
 
@@ -432,7 +437,7 @@ azure-files-ad-lab/
 │   ├── Join-StorageAccountToAD.ps1    # Storage account AD DS join + default share permission
 │   ├── Prepare-Client.ps1             # Remote Desktop Users, AD module, AzFilesHybrid
 │   ├── Set-ShareAcl.ps1               # NTFS permissions with the storage account key
-│   ├── Set-ShareRbac.ps1              # Group RBAC at share scope (from your workstation)
+│   ├── Set-ShareRbac.ps1              # Group RBAC at .../fileshares/<share> scope (from your workstation)
 │   ├── Test-FileShareAccess.ps1       # Smoke test from CLIENT01
 │   └── Remove-LabSyncedObjects.ps1    # Removes the lab objects from Entra ID before clean up
 └── docs/
