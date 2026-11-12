@@ -137,7 +137,7 @@ if ($mounted) {
 else {
     Write-Output ''
     Write-Output 'Hints:'
-    Write-Output '  System error 5 (access denied): no share-level permission. Check the RBAC roles (Set-ShareRbac.ps1) or the default share permission. RBAC changes can take a few minutes to apply.'
+    Write-Output '  System error 5 (access denied): no share-level permission. Check the RBAC roles (Set-ShareRbac.ps1) or the default share permission. Roles must be scoped to .../fileServices/default/fileshares/<share> (or the storage account), not .../shares/<share>. RBAC changes can take a few minutes to apply.'
     Write-Output '  System error 1326 / 86: wrong password, or the user is not synced to Microsoft Entra ID (share-level RBAC needs the synced identity).'
     Write-Output '  System error 53 / 67: DNS or network. Check the DNS and TCP 445 results above.'
 }
