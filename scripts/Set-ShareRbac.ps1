@@ -17,7 +17,16 @@
          a synced group whose on-premises SID belongs to that domain.
          Groups with the same name left over from previous lab forests
          are ignored.
-      3. Assigns the role at the file share scope
+      3. Assigns the role at the file share scope:
+           <storage-account-id>/fileServices/default/fileshares/<share>
+      4. Removes the same role assigned by older versions of this script
+         at the share's ARM resource ID (.../fileServices/default/shares/<share>)
+
+    Scope: Azure RBAC accepts both paths, but Azure Files evaluates
+    share-level roles only at .../fileshares/<share> (or above, on the
+    storage account). A role at .../shares/<share> is listed, yet the mount
+    fails with System error 5 (access denied on the SMB tree connect).
+    That's why the scope isn't taken from 'az storage share-rm show'.
 
     Default mapping:
       FileShare-Users   -> Storage File Data SMB Share Contributor
@@ -86,10 +95,20 @@ if (-not $StorageAccountName) {
     $StorageAccountName = $accounts[0]
 }
 
-$shareScope = (Invoke-Az storage share-rm show `
+# The share must exist. Its ARM resource ID (.../shares/<share>) is the
+# legacy scope: Azure Files doesn't evaluate share-level roles there.
+$legacyScope = (Invoke-Az storage share-rm show `
     --resource-group $ResourceGroupName `
     --storage-account $StorageAccountName `
     --name $ShareName).id
+
+$storageAccountId = Invoke-Az storage account show `
+    --resource-group $ResourceGroupName `
+    --name $StorageAccountName `
+    --query id
+
+# Scope evaluated by Azure Files for share-level permissions
+$shareScope = "$storageAccountId/fileServices/default/fileshares/$ShareName"
 
 Write-Output "Share scope: $shareScope"
 
@@ -159,16 +178,28 @@ foreach ($groupName in $GroupRoles.Keys) {
 
     if ($existing.Count -gt 0) {
         Write-Output "Already assigned: $groupName -> $role"
-        continue
+    }
+    else {
+        Invoke-Az role assignment create `
+            --assignee-object-id $groupId `
+            --assignee-principal-type Group `
+            --role $role `
+            --scope $shareScope | Out-Null
+
+        Write-Output "Assigned: $groupName -> $role"
     }
 
-    Invoke-Az role assignment create `
-        --assignee-object-id $groupId `
-        --assignee-principal-type Group `
+    # Remove the same role at the legacy scope (older versions of this script)
+    $legacy = @(Invoke-Az role assignment list `
+        --assignee $groupId `
         --role $role `
-        --scope $shareScope | Out-Null
+        --scope $legacyScope |
+        Where-Object { $_.scope -eq $legacyScope })
 
-    Write-Output "Assigned: $groupName -> $role"
+    foreach ($assignment in $legacy) {
+        Invoke-Az role assignment delete --ids $assignment.id | Out-Null
+        Write-Output "Removed legacy assignment at .../shares/${ShareName}: $groupName -> $role"
+    }
 }
 
 # 3. Summary
