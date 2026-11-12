@@ -377,16 +377,20 @@ Run from your workstation after Entra Connect has synced the groups. For each gr
 
 1. Reads the **domain SID of the current forest** from the storage account's AD DS settings.
 2. Waits until a synced group with that name **and a SID from that domain** exists in Entra ID. Groups with the same name from previous lab forests are ignored.
-3. Assigns the role at the share scope, if it isn't assigned yet.
+3. Assigns the role at the share scope, `<storage-account-id>/fileServices/default/fileshares/<share>`, if it isn't assigned yet.
+4. Removes the same role at the legacy scope `.../fileServices/default/shares/<share>`, created by older versions of the script.
 
 Share-level RBAC is evaluated against the user's synced Entra ID identity, matched by the on-premises SID. Users must be synced, which is why Entra Connect is a required step.
 
 **Verify:**
 
 ```powershell
-$scope = az storage share-rm show -g $rg --storage-account $sa --name fileshare --query id -o tsv
+$saId = az storage account show -g $rg -n $sa --query id -o tsv
+$scope = "$saId/fileServices/default/fileshares/fileshare"
 az role assignment list --scope $scope --query "[].{principal:principalName, role:roleDefinitionName}" -o table
 ```
+
+> **Scope:** share-level roles must be assigned at `<storage-account-id>/fileServices/default/fileshares/<share>` (or on the storage account). Don't use the share's resource ID returned by `az storage share-rm show` (`.../fileServices/default/shares/<share>`): Azure RBAC accepts it and lists the role, but Azure Files doesn't evaluate it, so the mount fails with **System error 5**. See [12.6](#126-share-level-role-at-the-wrong-scope).
 
 ### 10.2 Default share-level permission
 
@@ -472,7 +476,7 @@ Debug-AzStorageAccountAuth -StorageAccountName <storage-account> -ResourceGroupN
 | `CheckChannelEncryption` | SMB channel encryption ciphers match. Needs an **elevated** session |
 | `CheckADObjectPasswordIsCorrect` | The computer object's password matches kerb1 |
 | `CheckSidHasAadUser` | The user's on-premises SID maps to an Entra ID user |
-| `CheckUserRbacAssignment` | The user has a share-level role (directly or through a group) |
+| `CheckUserRbacAssignment` | The user has a share-level role (directly or through a group). A pass doesn't confirm that the role is at a scope Azure Files evaluates. See [12.6](#126-share-level-role-at-the-wrong-scope) |
 | `CheckDefaultSharePermission` | Shows the default share-level permission |
 
 ## 12. Troubleshooting and lessons learned
@@ -492,7 +496,7 @@ Debug-AzStorageAccountAuth -StorageAccountName <storage-account> -ResourceGroupN
 | `az` errors with `expected one argument` | Variables empty in a new PowerShell window | Set `$rg`, `$sa` and the `FILESLAB_*` variables again |
 | `Set-ShareRbac.ps1`: group not found | Groups not synced yet | Run `Start-ADSyncSyncCycle -PolicyType Delta` on DC01 and rerun |
 | `net use`: "The password is invalid", then a credentials prompt | The share refused access after Kerberos authentication | See [12.2](#122-the-password-is-invalid-when-mounting) |
-| Mount: System error 5 | No share-level permission for the user, or identities colliding with leftovers of a previous forest | Check RBAC at the share scope and the default permission. See [12.3](#123-leftover-objects-from-previous-lab-forests) |
+| Mount: System error 5 | Role at the wrong scope (`.../shares/<share>`), no share-level permission for the user, or identities colliding with leftovers of a previous forest | Check that RBAC is at `.../fileshares/<share>` ([12.6](#126-share-level-role-at-the-wrong-scope)), then the default permission and [12.3](#123-leftover-objects-from-previous-lab-forests) |
 | Mount: System error 1326 | NTLM fallback with typed credentials | Don't type credentials at the prompt. AD DS identities only work with Kerberos |
 | Mount: System error 1219 | A connection to the same server with other credentials exists | `net use * /delete /y` |
 | `Get-ADSyncScheduler` not recognized | ADSync module not loaded in the session | Open a new window, or import it from `C:\Program Files\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1` |
@@ -514,7 +518,7 @@ The SMB client log on the client shows the real status:
 Get-WinEvent -LogName 'Microsoft-Windows-SMBClient/Security' -MaxEvents 5 | Format-List TimeCreated, Id, Message
 ```
 
-- Event **31010** with **Access Denied** at "connect to the share": Kerberos worked, and the **share-level permission** refused the user.
+- Event **31010** with **Access Denied** at "connect to the share": Kerberos worked, and the **share-level permission** refused the user. Check the role scope first ([12.6](#126-share-level-role-at-the-wrong-scope)).
 - A logon failure status: the storage account rejected the authentication itself. Check the join with `Debug-AzStorageAccountAuth`.
 
 To tell authentication and authorization apart quickly, temporarily set a default share-level permission (see [8.1](#81-how-it-works)). If the mount then works, Kerberos and the join are fine and the problem is the user's share-level permission.
@@ -532,7 +536,7 @@ Effects on the next deployment:
   - The mount was still denied (event 31010, Access Denied) with RBAC only, both through the group role and with the role assigned directly to the user, for hours.
   - With a default share-level permission, the same user mounted immediately.
 
-  The duplicate identities are the most likely cause, but this wasn't confirmed. A previous deployment in the same tenant, without leftovers, worked with group RBAC.
+  The duplicate identities were suspected but never confirmed. The same symptoms were later reproduced in a tenant **without** leftovers and traced to roles assigned at the `.../shares/<share>` scope, which Azure Files doesn't evaluate (see [12.6](#126-share-level-role-at-the-wrong-scope)). If you see this, check the role scope before suspecting leftovers.
 
 How to avoid it:
 
@@ -555,6 +559,33 @@ With `$ErrorActionPreference = 'Stop'`, Windows PowerShell 5.1 turns anything a 
 | `az ad user list` | Doesn't return `onPremisesSecurityIdentifier`. Use Microsoft Graph with `$select` |
 | `az ad group list` | Returns `onPremisesSecurityIdentifier` and `onPremisesSyncEnabled` |
 | `az rest` with `&` in the URL | On Windows, `az` is a batch file and `&` splits the command (`'$select' is not recognized`). Pass query options with `--uri-parameters` instead |
+| `az storage share-rm show --query id` | Returns the share's ARM resource ID, `.../fileServices/default/shares/<share>`. Don't use it as the scope of share-level roles. See [12.6](#126-share-level-role-at-the-wrong-scope) |
+
+### 12.6 Share-level role at the wrong scope
+
+**Symptom:** the mount as a lab user fails with **System error 5**, while the storage account key works. Everything on the identity side checks out:
+
+- `klist` shows an AES-256 ticket for `cifs/<storage-account>.file.core.windows.net`.
+- The user is synced, its `onPremisesSecurityIdentifier` matches `whoami /user`, and it's a member of `FileShare-Users` in Entra ID.
+- `az role assignment list` shows the group roles on the share.
+
+A network trace shows Kerberos and the SMB session setup succeeding, then the tree connect to the share failing. With SMB encryption on, the tree connect response is encrypted, but its size gives it away: a 73-byte message is an SMB2 error response.
+
+**Cause:** the roles were assigned at the share's ARM resource ID, `.../fileServices/default/shares/<share>`, the `id` returned by `az storage share-rm show` (and by a Bicep `scope: fileShare`). Azure RBAC accepts that scope and lists the role, but Azure Files evaluates share-level permissions at `.../fileServices/default/fileshares/<share>` or above. Older versions of `Set-ShareRbac.ps1` used the resource ID.
+
+**Fix:** run the current `Set-ShareRbac.ps1` again. It assigns the roles at the `fileshares` scope and removes the legacy ones. To do it by hand:
+
+```powershell
+$saId  = az storage account show -g $rg -n $sa --query id -o tsv
+$scope = "$saId/fileServices/default/fileshares/fileshare"
+$users  = az ad group list --filter "displayName eq 'FileShare-Users'"  --query "[?onPremisesSyncEnabled].id | [0]" -o tsv
+$admins = az ad group list --filter "displayName eq 'FileShare-Admins'" --query "[?onPremisesSyncEnabled].id | [0]" -o tsv
+
+az role assignment create --assignee-object-id $users  --assignee-principal-type Group --role "Storage File Data SMB Share Contributor" --scope $scope
+az role assignment create --assignee-object-id $admins --assignee-principal-type Group --role "Storage File Data SMB Share Elevated Contributor" --scope $scope
+```
+
+Then, on CLIENT01, run `net use * /delete /y` and `klist purge`, and mount again. If the tenant has leftover groups with the same names (see [12.3](#123-leftover-objects-from-previous-lab-forests)), pick the group IDs whose SID belongs to the current forest, or just run the script.
 
 ## 13. Security considerations
 
